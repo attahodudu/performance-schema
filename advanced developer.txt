@@ -1,0 +1,1162 @@
+Table ALIAS
+
+SELECT p.product_id, p.product_name, categories.category_name
+FROM products p
+INNER JOIN categories
+ON p.category_id = categories.category_id
+ORDER BY p.product_name ASC, categories.category_name ASC;
+--p here is the alias for the table
+
+select prodname, d.name, d.amount from product 
+full outer join discount d on 
+product.dis_id =d.dis_id;    --the 'right-side only' alias can also work.
+
+
+FLASHBACK IS KING
+--on sysdba 
+ALTER DATABASE FLASHBACK ON;
+ALTER DATABASE FLASHBACK OFF;
+GRANT EXECUTE ON SYS.DBMS_FLASHBACK TO performance;
+ 
+SELECT current_scn FROM v$database; output:3084534(system change number);
+FLASHBACK TABLE candidates TO SCN 3084534;  --brother to rollback, this is for dml alone
+FLASHBACK DATABASE TO SCN 3084534; --ORA-38757: Database must be mounted and not open to FLASHBACK. mount and flashback again
+
+drop table candidate;  --can be flashedback
+drop table candidates purge;  --cannot flashback this table because it is not in recycle bin
+
+FLASHBACK TABLE candidate TO before drop;
+
+show recyclebin;
+flashback table "BIN$sLJqraKnTriWGFZixcjuPQ==$0" to before drop;
+
+--only objects in the recycle bin can be purged
+PURGE TABLE tbname;                   
+PURGE INDEX idxname;                
+PURGE TABLESPACE tsname;  
+PURGE TABLESPACE tsname USER user_name; 
+PURGE RECYCLEBIN; 	--delete all objects in your recycle bin                 
+PURGE DBA_RECYCLEBIN; 
+
+
+alter system set db_recovery_file_dest_size=20G scope=both sid='*';
+alter system set db_recovery_file_dest='+RECO' scope=both sid='*';
+SELECT flashback_on FROM v$database;
+ALTER DATABASE FLASHBACK off;
+alter database flashback on;
+grant FLASHBACK ARCHIVE ADMINISTER to performance; --extra
+
+
+--SUBQUERY
+SELECT
+    dis_id, name FROM
+    discount d
+WHERE
+    percentage < (
+        SELECT AVG(amount)
+        FROM discount
+        WHERE dis_id= d.dis_id
+);    
+--correlated subquery because it uses condition from the outside query instead of inside.
+--selects all the columns at once since there's no particular value for the condition
+
+
+--EXAMPLE
+SELECT
+    DIS_id,
+    name,
+    descrip,
+    (SELECT AVG(amount) FROM discount WHERE dis_id = p.dis_id) avg_standard_cost
+FROM discount p;
+--a select statement which serves as a column in the same table. aka a column with condition
+--selects all the columns at once since there's no particular value for the condition
+
+NOT EXIST
+--select all discounts that have no product in the related table(foreign table) using not exist
+SELECT dis_id, name FROM discount
+WHERE NOT EXISTS
+(SELECT * FROM product WHERE
+product.dis_id = discount.dis_id
+);
+--very good exposure
+
+
+INLINE VIEWS
+--inline view. subquery and it's correlated are in the conditional part i.e after 'where' clause, but in-line view is after the 'from' clause.
+--this is basically 'select from' another 'select from' statement
+
+SELECT * FROM( SELECT dis_id,name,amount FROM discount ORDER BY amount DESC )
+WHERE ROWNUM <= 5;  
+--rownum here is the alternative to "fetch first 'number' of rows".
+
+with sel as (SELECT dis_id,name,amount FROM discount ORDER BY amount DESC)
+select dis_id,name,amount from sel where rownum<=5;
+---------with clause, alternative to inline view. 
+--Sel here looks like a cursor/alias for the select statement in bracket but it's not.
+
+
+--lateral keyword inline view. subject to some restrictions.
+SELECT
+descrip,
+name FROM
+discount p,
+LATERAL(
+SELECT * FROM product c WHERE c.dis_id = p.dis_id)
+ORDER BY name;
+--although i'm not really paying attention to this view
+
+
+--updatable inline view
+update (SELECT amount  FROM discount INNER JOIN product using (dis_id)
+WHERE prod_id= 7) set amount=amount*2;
+/*"ORA-01779: cannot modify a column which maps to a non key-preserved table" to avoid this error: 
+1. use a key in the inner where clause not a column that is not a key. it must be a key from the second table in the join operation.
+2. the second table must have a foreign key from the first table primary key
+3. THE SUBSQUERY WILL ONLY SELECT THE COLUMN FROM THE FIRST WITHOUT COLUMNS FROM THE JOINED TABLE*/
+
+
+--delete inline view
+DELETE from (select AMOUNT FROM DISCOUNT INNER JOIN PRODUCT USING(dis_id)
+WHERE prod_id = 2)WHERE amount>500; 
+/*same here as update, foreign key in the second table of the join must be used inside the subquery.
+if there are duplicate values in the foreign key column(second table) for one primary key in the second table,
+then the subquery will not work, therefore the whole query will fail.
+one primary key must have one foreign key in the second table(unique fks)*/
+
+--example of scalar subquery
+select e.prodname, (select d.name
+from   discount d
+where  d.dis_id = e.dis_id) discountname from  product e;
+--done on small tables for fast response
+--second table and where condition in a subquery. 'join' in disguise
+
+example2
+insert into payment_details values(27, (select amount+delivery_fees from order_details where order_details_id=15), 
+'card', 'riverbank', current_timestamp, 15); 
+
+
+MERGE
+
+MERGE INTO member_staging x
+USING (SELECT member_id, first_name, last_name, rank FROM members) y
+ON (x.member_id  = y.member_id)
+WHEN MATCHED THEN
+    UPDATE SET   x.last_name = y.last_name
+               where member_id in (1,2,3,4,5,6)
+WHEN NOT MATCHED THEN
+    INSERT( x.first_name, x.last_name)  
+    VALUES(y.first_name, y.last_name);
+--merge into means insert into or update into    
+--this one is self explanatory(source:https://www.oracletutorial.com/oracle-basics/oracle-merge/)
+--updating a column from another table with same datatype and inserting at the same time, if conditions are not met.
+--in the 'using' clause or keyword, one must select all coloumns of the source table, not some
+--in the insert, first_name is not needed, but there's a 'not null' constraint in the table creation
+
+e.g2
+MERGE INTO somes x
+USING (SELECT categ_id,name,descrip, createdate from category) y
+ON (x.categ_id = y.categ_id)
+WHEN MATCHED THEN
+    UPDATE SET x.name= y.name
+               where categ_id =7
+WHEN NOT MATCHED THEN
+    INSERT(x.id, x.name)
+    VALUES(y.categ_id, y.name);  
+/*
+1.the rest columns here will automatically be null, since they are not included in the insert.
+2.every merge execution doubles the rows, the updated ones appears first, then the old ones later, if
+there's no match(i.e if target foreign key has no matching value of the source pk)
+3.one or more rows is removed from the old set of rows if they are involved in the where condition when the rows doubles*/
+
+
+e.g3
+MERGE INTO somes  x
+USING category i
+ON (x.categ_id = i.categ_id )
+WHEN MATCHED THEN
+UPDATE SET
+x.name = i.name,
+x.descrip= i.descrip where categ_id=3;
+--this is an update only merge statement--'when matched'
+--as long as there's a match(i.e if target foreign key has a matching value of the source pk)
+--in this case only one row will be updated or more rows as specified in the where clause.
+
+
+e.g4
+MERGE INTO somes x
+USING category i
+ON (x.categ_id = i.categ_id)
+WHEN NOT MATCHED THEN
+INSERT (x.id , x.name, x.descrip)
+VALUES (i.categ_id , i.name, i.descrip);
+--this is an insert-only merge statement--'when not matched'
+
+
+MULTI-TABLE INSERT ALL
+--for ME there's no point for a multi-table 'insert all' because of it's numerous limitations.
+--batch insert makes more sense to me.
+
+INSERT ALL 
+    INTO train_seats(seat_no, train_no)
+    VALUES (1,4)
+
+    INTO train_seats(seat_no, train_no)
+    VALUES (2,2) 
+
+    INTO train_seats(seat_no, train_no)
+    VALUES (3,9)
+SELECT 1 FROM dual;
+--this is an unconditional 'insert all'
+
+
+LISTAGG FUNCTION
+
+SELECT LISTAGG(order_details_id,',') WITHIN GROUP(ORDER BY order_details_id) order_details_id, discount
+FROM order_details GROUP BY discount order by discount;  
+--listagg function can only be used with columns of unique values
+--for each order_details_id that has duplicate discount values, the unique order_details_id is listed in csv or can be seperated by any character.
+--'WITHIN GROUP(ORDER BY order_details_id)' this statement is optional.
+--it is better arranged than this: select order_details_id,discount from order_details order by discount, order_details_id;
+
+
+SELECT LISTAGG(pay_id,',') WITHIN GROUP(ORDER BY pay_id) pay_id, payment_method
+FROM payment_details GROUP BY payment_method ORDER BY payment_method;  
+--result:payment_method with value 'card' has pay_id of 2,5,6,18,19 and is listed like this in the output
+
+error
+SELECT LISTAGG(pay_id,':' ON OVERFLOW ERROR) WITHIN GROUP(ORDER BY pay_id) paid, bank
+FROM payment_details GROUP BY bank ORDER BY bank;   --ON OVERFLOW ERROR check overflow error, on 19c is not neccessary
+
+SELECT LISTAGG(pay_id,':' ON OVERFLOW TRUNCATE) WITHIN GROUP(ORDER BY pay_id) paid, bank
+FROM payment_details GROUP BY bank ORDER BY bank;  
+--ON OVERFLOW TRUNCATE handles the error. 19c doesn't have much of this errors
+--or this= ON OVERFLOW TRUNCATE '!!!' or this = ON OVERFLOW TRUNCATE '!!!' WITHOUT COUNT
+
+
+ROLLUP
+
+select amount, sum(delivery_fees) from order_details group by rollup(amount);
+--wow, a solution to this error: not a single-group group function
+--group by rollup(rolling up the unaggregated column)
+--it calculates the total of the aggregated column at the end while returning the normal no. of values
+--or
+select amount, sum(delivery_fees) totalfees from order_details where cart_id=10 group by rollup(amount);
+--or
+select amount, delivery_address,delivery_method,sum(delivery_fees) totalfees from order_details where cart_id=10 
+group by rollup(amount,delivery_address,delivery_method);
+--or
+select amount, sum(delivery_fees) totalfees from order_details INNER JOIN cart_item USING (cart_id) where cart_id in (10,8,5) 
+group by rollup(amount);
+--or
+select amount, delivery_address,delivery_method, sum(delivery_fees) from order_details 
+group by delivery_method, rollup(amount, delivery_address);  --partial rollup syntax
+
+
+
+CUBE (brother to rollup)
+select pay_id, payment_method, sum(total_amount) from payment_details group by cube(pay_id,payment_method);
+--aggregates the total for each value of the aggregated column(i.e subtotal)
+--the result is displayed top of the rows, while rollup, the result is displayed at the bottom.
+
+
+GROUPING SETS
+select amount, delivery_address,delivery_method, status, sum(delivery_fees) from order_details 
+group by grouping sets ((delivery_address, delivery_method, amount,status), (delivery_address,status)) order by status;
+/*grouping inside grouping, so multiple sets of grouping. It is always easier to use 'group by' function with columns that
+has only two distinct  values*/
+
+GROUPING FUNCTION
+--grouping function must be used with 'groub by grouping sets'
+SELECT pay_id, total_amount,GROUPING(pay_id) pay_grouping, GROUPING(total_amount) total_grouping,
+SUM(order_details_id) FROM payment_details GROUP BY GROUPING SETS
+((pay_id,total_amount), (total_amount),() ) ORDER BY pay_id;
+--grouping function returns 0 or 1 according to your query most times
+-- if the values of the column in the result is null , the grouping function returns 1 otherwise it returns 0
+
+
+/*this code similar to cube, calclates the total of customers who paid with card, and another
+total for those who paid with transfer, then calculates the total of both.*/
+SELECT 
+    DECODE(GROUPING(pay_id),1,'sum for:', pay_id) payid,
+    DECODE(GROUPING(payment_method),1,'grand total', payment_method) method_pay,
+    SUM(total_amount) FROM payment_details GROUP BY 
+    GROUPING SETS(
+        (pay_id,payment_method),
+        (pay_id),
+        (payment_method),
+        ()
+    )ORDER BY pay_id, payment_method;
+--in cube, there's null in the id section of the result, but here null is replaced with 'sum for:' and 'grand total'. 
+--It makes the code more result more readable
+
+
+Oracle GROUPING_ID() function
+
+/*The GROUPING_ID() function takes the “group by” 
+columns and returns a number denoting the GROUP BY level. In other words, 
+it provides another compact way to identify the subtotal rows.*/ 
+--from https://www.oracletutorial.com/oracle-basics/oracle-grouping-sets/
+
+
+
+
+CONCURRENCY AND CONSISTENCY
+set transaction isolation level read committed;  --oracle default is read committed.
+
+serializable
+Serializable stops you from changing rows modified by other transactions.
+This acts as if you are the only user of the database. Changes made by other transactions are hidden from you
+it does not permit nor read non-reapeatable,phantom and dirty reads.(oracle database can never allow dirty reads on default)
+
+read-only
+set transaction read only;
+This mode can be useful in reporting environments.
+You need to stop all non-select DML
+
+read-write
+set transaction read write;
+--same as read committed in oracle default.
+
+read committed
+it permits non-reapeatable reads and phantom reads(widely used)
+
+(Non-repeatable read: This simply means that if you read a row at time T1 and try to re-read that row at time T2, the row may have changed. 
+It may have disappeared, it may have been updated, and so on.
+
+
+Phantom read: This means that if you execute a query at time T1 and re-execute it at time T2, additional rows may have been added to the database, 
+which may affect your results. This differs from a non-repeatable read in that with a phantom read, 
+data you already read hasn't been changed, but instead, more data satisfies your query criteria than before.
+)
+
+
+
+ANALYTICS - WINDOWING CLAUSE PARTITIOIN BY, OVER()
+
+select name, descrip, sum(amount) over(partition by name,descrip) total_amount
+from discount where active_yn='y' order by descrip;
+--partition by clause groups the the columns you specify like rollup but no subtotal and overall total is given at all
+
+--e.g2
+SELECT
+name,
+descrip,
+COUNT(active_yn) OVER(PARTITION BY name,descrip) total_each from discount;
+
+select name, descrip, sum(amount) from discount  where active_yn='y' group by rollup(name,descrip); 
+/*anywhere there is null, it's calculating the subtotal of a group you specify and gives the total of everything(under each group),
+but cube clause arranges it cleaner because it gives it subtototals at the end together with the overall,
+and not in between like rollup.*/
+
+--E.G3
+SELECT
+dis_id,
+name,
+sum(amount)OVER () total FROM discount;
+--Solution to 'not a single group function'. calculates the total and returns in all rows.
+--no rollup here but 'OVER ()' has taken care of 'not a single....'
+
+--e.g4
+SELECT
+dis_id,
+name,
+descrip,
+sum(amount)OVER (order by descrip) total FROM discount; 
+
+
+RANK() FUNCTION
+SELECT amount, RANK() OVER (ORDER BY amount desc) rank
+FROM discount;   
+--ranks the position(in numbers) of result values according to ascending or descending order
+--in rank() if there are 4 '1s'(1 in 4 places), then the next number will be 5
+
+
+--rank with over()
+WITH cte_prod AS (SELECT prodname, prod_size, 
+RANK() OVER(ORDER BY prod_size ) size_rank FROM product
+)
+SELECT prodname,  prod_size,size_rank
+FROM cte_prod
+WHERE size_rank <= 9;
+--with clause can be used in place of an in-line view
+
+--it is the same thing with this code, just that one cannot use the where condition for size_rank here
+SELECT prodname, prod_size, 
+RANK() OVER(ORDER BY prod_size) size_rank FROM product;
+
+
+--rank with partition, rank() must always go with order by clause
+WITH cte_prod AS (SELECT prodname, prod_size, 
+RANK() OVER(partition by prod_size  ORDER BY prodname desc ) size_rank
+FROM product)
+SELECT prodname,prod_size,size_rank
+FROM cte_prod;   
+--cte_prod is looks like a function/cursor/alias that contains the first select query
+
+
+--TOP N QUERIES
+SELECT PRODNAME, rownum from product;
+select prodname,createdate from product where rownum<7;
+
+select * from (select name, percentage from discount order by percentage) discount where rownum <=5;
+--inline view and top n query. old kind of fetch first first n rows
+
+
+<<DENSE_RANK() >> 
+--this is part of top n queries since there's no number gap in ranking.
+SELECT amount, dense_RANK() OVER (ORDER BY amount desc) rank
+FROM discount;
+--in dense_rank the the column returns serial values without jumping any values.
+--in rank() if there are 4 '1s'(1 in 4 places) 
+--then the next number will be 5, but in dense_Rank, the next number will be 2, no jumping in ranking
+
+
+NTILE
+SELECT amount,NTILE(2) OVER (ORDER BY amount) AS val_ntile FROM discount;
+SELECT amount,NTILE(3) OVER (ORDER BY amount) AS val_ntile FROM discount;
+/*divides the rows according to their values in a certain range and assigns a value
+like a statistical range to result returned intelligently. (i.e ranking according to range)
+e.g from 100-200 can be given an of ntile value of one(1), 300-400-an ntile value of 2 etc, i.e if the highest value in the rows is up
+to 1000 with ntile(5) in the command etc*/
+
+SELECT amount FROM (SELECT amount,NTILE(3) OVER (ORDER BY amount) AS val_ntile 
+FROM  discount) WHERE  val_ntile = 3;
+--inline bigger view
+--ntile value of 3
+
+
+CONNECT BY LEVEL
+--this selects the tree, level, root_id(which is 1), path(the numbers you will use to locate the level)
+SELECT id,
+       p_id,
+       RPAD('.', (level-1)*2, '.') || id AS tree,
+       level,
+       CONNECT_BY_ROOT id AS root_id,
+       LTRIM(SYS_CONNECT_BY_PATH(id, '-'), '-') AS path,
+       CONNECT_BY_ISLEAF AS leaf
+FROM   tab1
+START WITH p_id IS NULL
+CONNECT BY p_id = PRIOR id
+ORDER SIBLINGS BY id;
+
+--note: it must be a self joined table before using this query to check the level(lineage e.glevel 4 is great grand child)
+SELECT id, parent_id, LEVEL
+FROM tab1 CONNECT BY PRIOR id = parent_id;
+
+
+--here's another solution, it's better to start with 1 because that is the root parent
+select t.*, level
+from tab1 t
+start with t.parent_id= 7   
+connect by prior t.id= t.parent_id;
+
+
+    
+--pseudocolumn, connect by-- used with condition to limit the result
+SELECT Level AS Sequence
+FROM Dual 
+CONNECT BY Level <= 5;
+
+SELECT Level+9 AS Alias_Name
+FROM Dual 
+CONNECT BY Level <= 10;
+
+SELECT Level AS Sequence, Sysdate AS System_date 
+FROM Dual 
+CONNECT BY Level <= 5;
+
+--level keyword must be used with connect by clause
+--level is like a pseudocolumn
+--connect_by_iscycle also relevant
+--connect_by_root also relevant
+
+
+
+--displaying the level and start with...(stack overflow helped)
+select t.*, level
+from employee t
+start with t.managerid = 'xx'   
+connect by prior t.empid = t.managerid;
+
+/*there's no xx in empid, so xx in managerid has no sibling. this is what brings better results if you start with such
+i.e xx is the only value that managerid and empid do not share, so it's better to start with that
+this is a better solution to the one below
+but most importantly, this type of connect by level query where managerid 
+does not have a parent in empid must not be self joined*/
+
+
+select t.*, level
+from employee t
+start with t.managerid = 'xx'
+connect by prior t.empid = t.managerid
+order siblings by name desc
+--order siblings by
+
+
+
+
+
+
+
+
+
+--REGULAR EXPRESSIONS are elder brothers to wild cards
+
+a.c
+--This expression matches all of the following sequences:
+--to find the sequence--'a', followed by any character, then followed by 'c'
+abc
+adc
+a1c
+a&c
+
+
+
+
+a+
+--This expression matches all of the following:to find one or more occurrences of the character 'a'(the immediate preceeding)
+a
+aa
+aaa
+
+
+ab?c
+--to find 'a', optionally followed by 'b', then followed by 'c' 
+abc
+ac
+
+
+
+ab*c
+--This expression matches all of the following sequences: to find 0 or more of the immediate preceeding
+ac
+abc
+abbc
+abbbbc
+
+
+
+b{5}
+
+--to find where 'b' occurs exactly 5 times, you specify the regular expression:
+--to search for an exact number of occurrences of the preceding character e.g
+bbbbb
+--Interval--Exact Count
+
+
+
+x{3,}
+--This expression matches all of the following:Interval--At Least Count 3 in sequence of the immediate preceeding
+xxx
+xxxxx
+--<<`Interval--At Least Count>>
+
+
+
+y{3,5}
+--This expression matches all of the following sequences:to find immediate preceeding between a range
+yyy
+yyyy
+yyyyy
+
+
+
+[xyz]
+--This expression matches the first character in each of the following strings:to find either x or y or z
+you
+zip
+regexp
+--Matching Character List
+
+
+
+[^efg]
+--to exclude the characters 'e', 'f', and 'g' from your search results
+abcdxh
+rhi
+--Non-Matching Character List. POSIX begins here
+
+
+
+[^p-z]
+--This expression matches the characters 'j' and 'l' in the following strings:
+--excludes any character between 'p' and 'z' from the search result:
+hijk
+lmn
+
+
+
+--or
+w(x|y)z
+--searches for the pattern: 'w', followed by either 'x' or 'y', then followed by 'z'
+
+
+
+
+--REGEXP_LIKE
+
+SELECT  street FROM usernow WHERE
+REGEXP_LIKE( street, 'm' );
+
+select street from usernow where street like 'm%';--wild cards alternative
+
+
+SELECT street FROM usernow
+WHERE REGEXP_LIKE( street, '^m');
+--(^) operator matches the beginning of the line.
+
+
+SELECT street FROM usernow
+WHERE REGEXP_LIKE( street , 't$'); 
+--$ operator matches the end of the line.
+
+
+SELECT street FROM usernow
+WHERE REGEXP_LIKE(street ,'^m|^n','i') order by street;   
+--| operator either matches m or n at the beginning of the line
+--the 'i' doesn't matter here
+
+
+SELECT street FROM  usernow
+WHERE REGEXP_LIKE( street , 'e{2}', 'i' )
+ORDER BY  street;
+--where e appears exactly 2 times in sequence
+--i means nothing, remove it.
+
+
+CREATE TABLE ax (
+data VARCHAR2(50)
+);
+
+INSERT INTO ax  VALUES ('RISE 1998');
+INSERT INTO ax  VALUES ('1998 NUM-B');
+INSERT INTO ax  VALUES ('NUM-R 1998 NUM-D');
+INSERT INTO ax  VALUES ('OPERA');
+INSERT INTO ax  VALUES ('RISE 1996');
+COMMIT;
+SELECT * FROM AX;
+
+
+SELECT *
+FROM   ax
+WHERE  (REGEXP_SUBSTR(data, '\d{4}')) >= 1998;
+--searching for results using a comparison operator '>=' instead of 'like' in wild card.
+--\d is used to search for any number, and {4} is searching for 4 consecutive numbers.
+
+--or
+SELECT *
+FROM   ax
+WHERE  (REGEXP_SUBSTR(data, '\d{4}')) = 1998;  
+
+--it's wild card example
+select * from ax WHERE data like '%1998%'; --this works
+select * from ax WHERE data = '%1998%';     --this can't work
+
+
+
+CREATE TABLE qa (
+data VARCHAR2(50)
+);
+INSERT INTO qa VALUES ('CartFCT123456789b2345173');
+COMMIT;
+
+
+SELECT REGEXP_SUBSTR(data, '[A-Z][a-z]+', 1, 1) col1,
+REGEXP_SUBSTR(data, '[A-Z]+', 1, 2) col2,
+REGEXP_SUBSTR(data, '[0-9]+', 1, 1) col3,
+REGEXP_SUBSTR(data, '[a-z]+', 1, 2) col4,
+REGEXP_SUBSTR(data, '[0-9]+', 1, 2) col5
+FROM   qa;
+/*---'[A-Z][a-z]+'---- A-Z is for the initcap M. a-z is for the remaining small letters, + means we need more than 1 
+or more the small letters.
+the first part of the numbers before the comma represents the number of occurence. the second number of the represents the 
+the column the search will start from.*/
+
+
+CREATE TABLE tt (
+data VARCHAR2(50)
+);
+INSERT INTO tt VALUES ('234/234325/ZX345621/20-jan-13');
+INSERT INTO tt VALUES ('23/23432/PINEAPPLE/20-jan-13');
+INSERT INTO tt VALUES ('23/23432/"ORANGE"/20-jan-13');
+COMMIT;
+
+select * from tt;
+
+SELECT REGEXP_SUBSTR(data, '[^/"]+', 1, 3) AS element3
+FROM   tt;
+--we don't need characters like this: / and ". + means  more than 1 or more characters thats are not / and "
+--3 means start from the 3rd column to search
+
+
+
+			EMAIL
+
+
+--REGEXP_LIKE:for email check
+CREATE TABLE cv(
+data VARCHAR2(50)
+);
+
+INSERT INTO cv(data) VALUES ('me@example.com');
+INSERT INTO cv(data) VALUES ('me@example');
+INSERT INTO cv(data) VALUES ('@example.com');
+INSERT INTO cv(data) VALUES ('me.me@example.com');
+INSERT INTO cv(data) VALUES ('me.me@ example.com');
+INSERT INTO cv(data) VALUES ('me.me@example-example.com');
+COMMIT;
+
+--correct check for email 
+SELECT data
+FROM   cv
+WHERE  NOT REGEXP_LIKE(data, '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}', 'i');
+--The following test gives us email addresses that approximate to invalid email address formats.
+
+--correct check for email 
+SELECT data
+FROM   cv
+WHERE  REGEXP_LIKE(data, '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}', 'i');
+--this one is definitely important
+
+
+<<REAL APPLICATION>>
+create table checker(
+id int,
+name varchar(20),
+email varchar(30) constraint chk_email check(REGEXP_LIKE(email, '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}', 'i'))
+);
+
+INSERT INTO checker(id,name,email) VALUES (1,'sss','me@example.com');
+INSERT INTO checker(id,name,email) VALUES (2,'dss','@example.com');       --invalid
+INSERT INTO checker(id,name,email) VALUES (3,'spss','me.me@example.com');
+INSERT INTO checker(id,name,email) VALUES (4,'sds','me.me@ example.com');   --invalid
+INSERT INTO checker(id,name,email) VALUES (5,'sms','me.me@example-example.com');  
+
+select * from checker;
+
+
+
+
+
+
+TEMPORARY TABLES(GLOBAL AND PRIVATE)
+
+                        --TEMPORARY TABLES
+/*global temporary tables are permanent objects whose data are stored on disk and 
+automatically deleted at the end of a session or transaction(you have to specify);*/
+
+/*differences b/w global and private:
+private must start with this ora$ptt_ , while in global it's not neccesary
+private tables are only accessible to the session that created it, while global according to it's name is the opposite
+private is stored on ram while global is stored on disk
+private transaction,session-- on commit drop, preserve. Global transaction,session--on commit delete rows,preserve rows
+*/
+
+
+CREATE PRIVATE TEMPORARY TABLE ORA$PTT_temp(
+temp_id INT,
+descrip VARCHAR2(100)
+) ON COMMIT DROP DEFINITION;
+
+--ddl audit will never make the temp table to be created 'after ddl on schema', so one must disable the trigger first.
+--'drop table ORA$PTT_temp'.-- drop syntax
+
+
+INSERT INTO ORA$PTT_temp(temp_id,descrip)
+VALUES(1,'this is a private temp table');
+
+SELECT temp_id, descrip
+FROM ORA$PTT_temp;
+
+
+
+--here we're not dropping table on commit, but truncate after session is closed
+CREATE PRIVATE TEMPORARY TABLE ora$ptt_temp(
+id INT,
+descrip VARCHAR2(100)
+) ON COMMIT PRESERVE DEFINITION;
+
+INSERT INTO ora$ptt_temp(id,descrip)
+VALUES(1,'private temp table with commit');
+
+SELECT id, descrip
+FROM ora$ptt_temp;
+
+COMMIT;
+
+
+
+
+--drop table on commit
+CREATE PRIVATE TEMPORARY TABLE ORA$PTT_temptab(
+id INT,
+descrip VARCHAR2(100)
+) ON COMMIT DROP DEFINITION;
+
+INSERT INTO ora$ptt_temptab(id,descrip)
+VALUES(1,'private temp table with commit');
+
+SELECT id, descrip
+FROM ora$ptt_temptab;
+
+commit;
+
+
+/*
+                LIMITATIONS
+Private temporary tables cannot be accessed through database links.
+Permanent database objects do not support  direct references to  private temporary tables.
+private temporary table columns are not allowed to have default values.
+materialized views and Indexes cannot be used on the private temporary tables.
+*/
+
+
+
+
+--GLOBAL
+--on commit delete, it truncates the table
+CREATE GLOBAL TEMPORARY TABLE temp_tab(
+  id           NUMBER,
+  descrip  VARCHAR2(20)
+)
+ON COMMIT DELETE ROWS;
+
+INSERT INTO temp_tab VALUES (1, 'am global now');
+
+select * from temp_tab;
+
+COMMIT;
+
+--on commit preserve rows
+CREATE GLOBAL TEMPORARY TABLE temp_tab2(
+  id           NUMBER,
+  descrip  VARCHAR2(20)
+)
+ON commit preserve ROWS;
+
+INSERT INTO temp_tab2 VALUES (1, 'was global since');
+
+select * from temp_tab2;
+
+COMMIT;
+
+
+--for normal table
+CREATE TABLE temp_tab(
+id NUMBER,
+description  VARCHAR2(20)
+);
+
+-- Populate table.
+INSERT INTO temp_tab
+--this block below produces just one column but we can select 2 columns by the power of aliasing x and y
+WITH data AS (
+  SELECT 1 AS id
+  FROM   dual
+  CONNECT BY level < 10000
+)
+SELECT rownum, TO_CHAR(rownum)
+FROM   data x, data y
+WHERE  rownum <= 900000;
+
+
+--checking undo used in the previous transaction 
+SELECT t.used_ublk,
+       t.used_urec
+FROM   v$transaction t,
+       v$session s
+WHERE  s.saddr = t.ses_addr
+AND    s.audsid = SYS_CONTEXT('USERENV', 'SESSIONID');
+
+
+select * from temp_tab;
+
+
+--for global temp
+CREATE GLOBAL TEMPORARY TABLE global_temp (
+  id           NUMBER,
+  descrip VARCHAR2(20)
+)
+ON COMMIT PRESERVE ROWS;
+
+-- Populate it
+INSERT INTO global_temp
+WITH data AS (
+  SELECT 2 AS id
+  FROM   dual
+  CONNECT BY level < 1000
+)
+SELECT rownum, TO_CHAR(rownum)
+FROM   data x, data y
+WHERE  rownum <= 900000;
+
+-- Check undo used by previous transaction.
+SELECT t.used_ublk,
+       t.used_urec
+FROM   v$transaction t,
+       v$session s
+WHERE  s.saddr = t.ses_addr
+AND    s.audsid = SYS_CONTEXT('USERENV', 'SESSIONID');
+
+
+--The following code creates a conventional table, populates it and checks the amount of redo generated by the transaction.
+--from: oracle-base.com
+
+-- Create conventional table.
+CREATE TABLE my_temp_table (
+  id           NUMBER,
+  description  VARCHAR2(20)
+);
+SET AUTOTRACE ON STATISTICS;
+
+-- Populate table.
+INSERT INTO my_temp_table
+WITH data AS (
+  SELECT 1 AS id
+  FROM   dual
+  CONNECT BY level < 10000
+)
+SELECT rownum, TO_CHAR(rownum)
+FROM   data a, data b
+WHERE  rownum <= 1000000;
+
+
+--We now repeat the previous test, but this time using a GTT.
+
+-- Create GTT.
+CREATE GLOBAL TEMPORARY TABLE my_temp_table (
+  id           NUMBER,
+  description  VARCHAR2(20)
+)
+ON COMMIT PRESERVE ROWS;
+
+SET AUTOTRACE ON STATISTICS;
+
+-- Populate GTT.
+INSERT INTO my_temp_table
+WITH data AS (
+  SELECT 1 AS id
+  FROM   dual
+  CONNECT BY level < 10000
+)
+SELECT rownum, TO_CHAR(rownum)
+FROM   data a, data b
+WHERE  rownum <= 1000000;
+
+TRUNCATE TABLE my_temp_table;
+
+
+
+
+				EXTERNAL TABLES
+--external tables cannot be used for tables accessed frequently.
+--extenal tables are used to query data from an external source without loading the data to the database.
+--1st create the directory with any name on local disk e.g c:\zloader, then paste the flat file or csv to be loaded there.
+--2nd, connect sys as sysdba, then this:  create directory zloader as 'c:\zloader'
+--3rd,  grant read,write on directory zloader to production,performance; prod and perf(ur users)
+
+CREATE TABLE external_tribes(
+    tribe_id INT,
+    tribename VARCHAR2(30)
+)
+ORGANIZATION EXTERNAL(
+    TYPE oracle_loader      
+    DEFAULT DIRECTORY zloader
+    ACCESS PARAMETERS 
+    (FIELDS TERMINATED BY ',')
+    LOCATION ('tribes.csv')
+);
+
+/*oracle has two types of loaders: oracle_loader and oracle_datapump
+with oracle_loader, you can load data from external text files, but can't unload, while
+oracle_datapump, one can load and unload */
+
+
+SELECT tribe_id, tribename FROM external_tribes
+ORDER BY tribename;
+
+--creating view on external table
+CREATE VIEW v_external_tribes 
+AS
+SELECT tribename
+FROM external_tribes
+WHERE tribename LIKE 'i%';				
+
+insert into external_tribes values(190,'ibibio');
+/*dml statements are not supported in external tables, nor pk, nor fk 
+or else you will get error action like: Don't do that!*/
+
+
+
+e.g2 --this one is from a notepad text
+CREATE TABLE external_somer(
+    somer_id INT,
+    somername VARCHAR2(30)
+)
+ORGANIZATION EXTERNAL(
+    TYPE oracle_loader      
+    DEFAULT DIRECTORY zloader
+    ACCESS PARAMETERS 
+    (FIELDS TERMINATED BY ',')
+    LOCATION ('somer.txt')
+);
+
+
+			COMPOUND TRIGGERS(for performance)
+--beggining of compound trigger
+/*--for triggers to be written wihout having any performance issues(e.g updating very large records and performing two or more
+dml statements is dangerous for performance. Like the 'after' dml statement is one, then the dml statement in the begin block
+is another one). Ideally one statement should run in batch for large operation e.g many insert statements can run at a time
+or many update statement can run at a time, but one cannot run large (one insert,one update) statement because of performance
+issues. therfore a compound trigger is born.
+*/
+--compund triggers allows one to avoid creating a package first then triger later, it is shorter and easier.
+--this below is the old way of solving mutating tables before compound triggers came on board.
+
+/*level_log =type,
+book1=source table, 
+var_log=variable name, 
+book1_level_log=target table, 
+book1_level_log%rowtype=datatype for target table columns,
+vari_log=new variable name for main trigger assignment, 
+extend() = a method that adds elements to the end of varray/nested tables, 
+count= used to count through the bulk for loop, the rest is syntax.*/
+
+create or replace package pkg_trig1 as
+type level_log is table of book1_level_log%rowtype;
+var_log level_log :=level_log();
+end pkg_trig1;
+/
+
+create or replace trigger levelbook_trig
+after update of sch_level on book1
+for each row
+declare
+vari_log book1_level_log%rowtype;
+begin
+vari_log.book_id := :old.id;
+vari_log.change_date := sysdate;
+vari_log.from_old_to_new := 'old level='||:old.sch_level|| ',new level='||:new.sch_level;
+
+pkg_trig1.var_log.extend();
+pkg_trig1.var_log(pkg_trig1.var_log.last) :=vari_log;
+end;
+/
+create or replace trigger schlevel_trig after
+update of sch_level on book1
+begin
+forall i in 1..pkg_trig1.var_log.count
+insert into book1_level_log values pkg_trig1.var_log(i);
+end;
+/
+
+
+
+
+--main performance compound trigger solution.
+/*level_log =type,
+book1=source table, 
+var_log=variable name, 
+book1_level_log=target table, 
+book1_level_log%rowtype=datatype for target table columns,
+vari_log=new variable name for main trigger assignment, 
+extend() = a method that adds elements to the end of varray/nested tables, 
+count= used to count through the bulk 'for loop', the rest is syntax.*/
+
+create or replace trigger comp_trig
+for update on book1 compound trigger
+
+type level_log is table of book1_level_log%rowtype;
+var_log level_log :=level_log();
+
+after each row is
+vari_log book1_level_log%rowtype;
+begin
+vari_log.book_id := :old.id;
+vari_log.change_date := sysdate;
+vari_log.from_old_to_new := 'old level='||:old.sch_level|| ',new level='||:new.sch_level;
+
+var_log.extend();
+var_log(var_log.last) :=vari_log;
+end after each row;
+
+after statement is 
+begin
+forall i in 1..var_log.count
+insert into book1_level_log values var_log(i);
+end after statement;
+end comp_trig;
+/
+--finally, i've done compound trigger for performance
+
+
+
+
+				COMOUND TRIGGER(for mutation)
+--the problem.
+--trigger the mutating tables
+--updating a table that is in the middle of an update through a trigger
+CREATE OR REPLACE TRIGGER member_uptrig 
+AFTER INSERT OR UPDATE ON book1
+FOR EACH ROW 
+DECLARE 
+min_level book1.sch_level%TYPE; 
+BEGIN 
+--lowest sch_level
+SELECT MIN (sch_level) INTO min_level
+FROM book1 WHERE min_level> 0;
+--min level must be greater than the new level to avoid an update
+IF min_level < :NEW.sch_level
+THEN UPDATE book1 SET sch_level = min_level
+WHERE id = :NEW.id; 
+END IF; 
+END;
+/
+--this is a one table trigger that performs update on one table after update on that same table, hence it mutates
+--min_level  = user defined variable
+--book1.sch_level%TYPE = datatype for sch on book1 table
+
+
+--repair the mutation
+CREATE OR REPLACE TRIGGER book1_mutate
+FOR UPDATE OR INSERT ON book1
+COMPOUND TRIGGER
+
+TYPE book_type IS RECORD(
+id        book1.id%TYPE, 
+sch_level book1.sch_level%TYPE
+);
+
+TYPE sch_type IS TABLE OF book_type
+INDEX BY PLS_INTEGER;
+t_book1 sch_type;
+
+AFTER EACH ROW IS 
+BEGIN  
+t_book1(t_book1.COUNT + 1).id := :NEW.id;    
+t_book1(t_book1.COUNT).sch_level := :NEW.sch_level;
+END AFTER EACH ROW;    
+
+AFTER STATEMENT IS    
+minlevel  book1.sch_level%TYPE; 
+BEGIN
+SELECT MIN(sch_level)
+INTO minlevel FROM book1 WHERE sch_level> 0;
+
+FOR indx IN 1..t_book1.COUNT    
+LOOP                                      
+IF minlevel < t_book1(indx).sch_level
+THEN    
+UPDATE book1 SET sch_level = minlevel WHERE id = t_book1(indx).id;    
+END IF;    
+END LOOP;    
+END AFTER STATEMENT;    
+END; 
+--sch_level=column to be updated
+--minlevel=variable name
+--t_book1=variable name
+--sch_type=type name
+--book_type = type name
+--'if' block, optional
+--'begin' block, main block for dml statements, the rest is syntax.
+

@@ -1,0 +1,3 @@
+REM INSERTING into PERFORMANCE.CITY
+SET DEFINE OFF;
+Insert into PERFORMANCE.CITY (CITY_NAME) values ('something');
